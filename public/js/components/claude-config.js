@@ -24,9 +24,9 @@ window.Components.claudeConfig = () => ({
         const baseUrl = this.config?.env?.ANTHROPIC_BASE_URL || '';
         try {
             const url = new URL(baseUrl);
-            return url.port || '8080';
+            return url.port || window.location.port || '8787';
         } catch {
-            return '8080';
+            return window.location.port || '8787';
         }
     },
 
@@ -129,7 +129,7 @@ window.Components.claudeConfig = () => ({
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
             this.config = data.config || {};
-            this.configPath = data.path || '~/.claude/settings.json'; // Save dynamic path
+            this.configPath = data.path || './.claude/settings.json'; // Save dynamic path
             if (!this.config.env) this.config.env = {};
 
             // Default MCP CLI to true if not set
@@ -239,8 +239,17 @@ window.Components.claudeConfig = () => ({
             return;
         }
 
+        const currentBaseUrl = this.config?.env?.ANTHROPIC_BASE_URL;
+        const currentAuthToken = this.config?.env?.ANTHROPIC_AUTH_TOKEN;
+
         // Merge preset config into current config.env
         this.config.env = { ...this.config.env, ...preset.config };
+        if (currentBaseUrl) {
+            this.config.env.ANTHROPIC_BASE_URL = currentBaseUrl;
+        }
+        if (currentAuthToken !== undefined) {
+            this.config.env.ANTHROPIC_AUTH_TOKEN = currentAuthToken;
+        }
 
         // Update Gemini 1M toggle based on merged config (not just preset)
         this.gemini1mSuffix = this.detectGemini1mSuffix();

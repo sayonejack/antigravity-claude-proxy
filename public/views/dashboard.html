@@ -268,6 +268,14 @@
                         <span class="text-gray-500" x-text="$store.global.t('hour1Colon')">1H:</span>
                         <span class="text-neon-green ml-1 font-bold" x-text="usageStats.thisHour"></span>
                     </div>
+                    <div class="px-2.5 py-1 rounded bg-space-850 border border-space-border/60 whitespace-nowrap">
+                        <span class="text-gray-500" x-text="$store.global.t('dailyCapColon')">Daily Cap:</span>
+                        <span class="text-neon-purple ml-1 font-bold" x-text="usageSummary.officialQuota?.requestsPerDayCap || 0"></span>
+                    </div>
+                    <div class="px-2.5 py-1 rounded bg-space-850 border border-space-border/60 whitespace-nowrap">
+                        <span class="text-gray-500" x-text="$store.global.t('minuteCapColon')">RPM Cap:</span>
+                        <span class="text-amber-300 ml-1 font-bold" x-text="usageSummary.officialQuota?.requestsPerMinuteCap || 0"></span>
+                    </div>
                 </div>
             </div>
 
@@ -445,6 +453,21 @@
             </div>
         </div>
 
+        <div class="mb-5 flex flex-wrap items-center gap-2 text-[10px] font-mono">
+            <div class="px-2.5 py-1 rounded bg-space-850/80 border border-space-border/60 text-gray-300">
+                <span x-text="$store.global.t('usageTrackedScope')">Tracked:</span>
+                <span class="ml-1 text-white" x-text="$store.global.t('localProxyRequestsOnly')">Local proxy requests only</span>
+            </div>
+            <div class="px-2.5 py-1 rounded bg-space-850/80 border border-space-border/60 text-gray-300">
+                <span x-text="$store.global.t('tierSignalsColon')">Tier signals:</span>
+                <span class="ml-1 text-neon-cyan" x-text="usageSummary.tierDetection?.tierSignalMismatchCount || 0"></span>
+            </div>
+            <div class="px-2.5 py-1 rounded bg-space-850/80 border border-space-border/60 text-gray-300">
+                <span x-text="$store.global.t('tierBreakdownColon')">Tier mix:</span>
+                <span class="ml-1 text-white" x-text="'U ' + (usageSummary.accountsByTier?.ultra || 0) + ' / P ' + (usageSummary.accountsByTier?.pro || 0) + ' / F ' + (usageSummary.accountsByTier?.free || 0)"></span>
+            </div>
+        </div>
+
         <!-- Dynamic Legend -->
         <div class="flex flex-wrap gap-3 mb-5"
             x-show="displayMode === 'family' ? selectedFamilies.length > 0 : Object.values(selectedModels).flat().length > 0">
@@ -477,7 +500,7 @@
             <canvas id="usageTrendChart"></canvas>
 
             <!-- Overall Loading State -->
-            <div x-show="!stats.hasTrendData"
+            <div x-show="!historyLoaded"
                 class="absolute inset-0 flex items-center justify-center bg-space-900/50 backdrop-blur-sm z-10"
                 style="display: none;">
                 <div class="text-xs font-mono text-gray-500 flex items-center gap-2">
@@ -486,8 +509,17 @@
                 </div>
             </div>
 
+            <div x-show="historyLoaded && !stats.hasTrendData"
+                class="absolute inset-0 flex flex-col items-center justify-center bg-space-900/30 z-10"
+                style="display: none;">
+                <div class="text-xs font-mono text-gray-500 text-center">
+                    <p x-text="$store.global.t('noDataTracked')">No data tracked yet</p>
+                    <p class="text-[10px] opacity-60 mt-1" x-text="$store.global.t('localProxyRequestsOnly')">Local proxy requests only</p>
+                </div>
+            </div>
+
             <!-- Empty State (After Filtering) -->
-            <div x-show="stats.hasTrendData && !hasFilteredTrendData"
+            <div x-show="historyLoaded && stats.hasTrendData && !hasFilteredTrendData"
                 class="absolute inset-0 flex flex-col items-center justify-center bg-space-900/30 z-10"
                 style="display: none;">
                 <div class="flex flex-col items-center gap-4 animate-fade-in">
@@ -505,7 +537,7 @@
             </div>
 
             <!-- No Selection State -->
-            <div x-show="stats.hasTrendData && hasFilteredTrendData && (displayMode === 'family' ? selectedFamilies.length === 0 : Object.values(selectedModels).flat().length === 0)"
+            <div x-show="historyLoaded && stats.hasTrendData && hasFilteredTrendData && (displayMode === 'family' ? selectedFamilies.length === 0 : Object.values(selectedModels).flat().length === 0)"
                 class="absolute inset-0 flex items-center justify-center bg-space-900/30 z-10"
                 style="display: none;">
                 <div class="text-xs font-mono text-gray-500"

@@ -153,8 +153,8 @@ function setupMiddleware(app) {
     process.on('SIGTERM', () => { save(); process.exit(); });
 
     // Request interceptor
-    // Track both Anthropic (/v1/messages) and OpenAI compatible (/v1/chat/completions) endpoints
-    const TRACKED_PATHS = ['/v1/messages', '/v1/chat/completions'];
+    // Track Anthropic, OpenAI-compatible, and WebUI playground requests
+    const TRACKED_PATHS = ['/v1/messages', '/v1/chat/completions', '/api/chat/send'];
 
     app.use((req, res, next) => {
         if (req.method === 'POST' && TRACKED_PATHS.includes(req.path)) {

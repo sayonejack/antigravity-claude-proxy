@@ -25,6 +25,7 @@ import { parseResetTime } from './rate-limit-parser.js';
 import { buildCloudCodeRequest, buildHeaders } from './request-builder.js';
 import { streamSSEResponse } from './sse-streamer.js';
 import { getFallbackModel } from '../fallback-config.js';
+import { activateTemporaryClaudeToGeminiSwitch } from '../temporary-model-switcher.js';
 import {
     getRateLimitBackoff,
     clearRateLimitState,
@@ -82,6 +83,17 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
                 // If wait time is too long (> 2 minutes), try fallback first, then throw error
                 if (minWaitMs > MAX_WAIT_BEFORE_ERROR_MS) {
+                    const temporaryGeminiModel = activateTemporaryClaudeToGeminiSwitch(
+                        model,
+                        `all accounts exhausted for ${formatDuration(minWaitMs)}`
+                    );
+                    if (temporaryGeminiModel) {
+                        logger.warn(`[CloudCode] Temporarily rerouting ${model} to ${temporaryGeminiModel} after Claude quota exhaustion (streaming)`);
+                        const fallbackRequest = { ...anthropicRequest, model: temporaryGeminiModel };
+                        yield* sendMessageStream(fallbackRequest, accountManager, false);
+                        return;
+                    }
+
                     // Check if fallback is enabled and available
                     if (fallbackEnabled) {
                         const fallbackModel = getFallbackModel(model);
@@ -485,6 +497,14 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
             throw error;
         }
+    }
+
+    const temporaryGeminiModel = activateTemporaryClaudeToGeminiSwitch(model, 'all retries exhausted');
+    if (temporaryGeminiModel) {
+        logger.warn(`[CloudCode] Temporarily rerouting ${model} to ${temporaryGeminiModel} after exhausting all Claude retries (streaming)`);
+        const fallbackRequest = { ...anthropicRequest, model: temporaryGeminiModel };
+        yield* sendMessageStream(fallbackRequest, accountManager, false);
+        return;
     }
 
     // All retries exhausted - try fallback model if enabled

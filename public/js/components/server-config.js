@@ -6,6 +6,7 @@ window.Components = window.Components || {};
 
 window.Components.serverConfig = () => ({
     serverConfig: {},
+    runtime: {},
     loading: false,
     advancedExpanded: false,
     debounceTimers: {}, // Store debounce timers for each config field
@@ -61,9 +62,66 @@ window.Components.serverConfig = () => ({
             if (!response.ok) throw new Error('Failed to fetch config');
             const data = await response.json();
             this.serverConfig = data.config || {};
+            this.runtime = data.runtime || {};
         } catch (e) {
             console.error('Failed to fetch server config:', e);
         }
+    },
+
+    getEffectiveLocalApiPort() {
+        return this.serverConfig.localApiPortOverride || this.runtime.effectiveLocalApiPort || window.location.port || '8787';
+    },
+
+    async saveOptionalPortField(fieldName, value, displayName) {
+        const store = Alpine.store('global');
+        const rawValue = String(value ?? '').trim();
+        const previousValue = this.serverConfig[fieldName] ?? null;
+
+        let nextValue = null;
+        if (rawValue !== '') {
+            const parsed = Number(rawValue);
+            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+                this.serverConfig[fieldName] = previousValue;
+                store.showToast(store.t('invalidPortOverride'), 'error');
+                return;
+            }
+            nextValue = parsed;
+        }
+
+        if (this.debounceTimers[fieldName]) {
+            clearTimeout(this.debounceTimers[fieldName]);
+        }
+
+        this.serverConfig[fieldName] = nextValue;
+
+        this.debounceTimers[fieldName] = setTimeout(async () => {
+            try {
+                const payload = {};
+                payload[fieldName] = nextValue;
+
+                const { response, newPassword } = await window.utils.request('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                }, store.webuiPassword);
+
+                if (newPassword) store.webuiPassword = newPassword;
+
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    store.showToast(store.t('fieldUpdated', {
+                        displayName,
+                        value: nextValue ?? store.t('followSitePort')
+                    }), 'success');
+                    await this.fetchServerConfig();
+                } else {
+                    throw new Error(data.error || store.t('failedToUpdateField', { displayName }));
+                }
+            } catch (e) {
+                this.serverConfig[fieldName] = previousValue;
+                store.showToast(store.t('failedToUpdateField', { displayName }) + ': ' + e.message, 'error');
+            }
+        }, window.AppConstants.INTERVALS.CONFIG_DEBOUNCE);
     },
 
 

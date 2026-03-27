@@ -14,17 +14,19 @@
 
 import path from 'path';
 import express from 'express';
-import { getPublicConfig, saveConfig, config } from '../config.js';
+import { getPublicConfig, saveConfig, config, getEffectiveLocalApiPort, getEffectiveLocalApiBaseUrl } from '../config.js';
 import { DEFAULT_PORT, ACCOUNT_CONFIG_PATH, MAX_ACCOUNTS, DEFAULT_PRESETS, DEFAULT_SERVER_PRESETS } from '../constants.js';
-import { readClaudeConfig, updateClaudeConfig, replaceClaudeConfig, getClaudeConfigPath, readPresets, savePreset, deletePreset } from '../utils/claude-config.js';
+import { readClaudeConfig, updateClaudeConfig, replaceClaudeConfig, getClaudeConfigPath, readPresets, savePreset, deletePreset, createDefaultClaudeConfig } from '../utils/claude-config.js';
 import { readServerPresets, saveServerPreset, updateServerPreset, deleteServerPreset } from '../utils/server-presets.js';
 import { logger } from '../utils/logger.js';
 import { getAuthorizationUrl, completeOAuthFlow, startCallbackServer } from '../auth/oauth.js';
 import { loadAccounts, saveAccounts } from '../account-manager/storage.js';
 import { getPackageVersion } from '../utils/helpers.js';
+import { sendMessage } from '../cloudcode/index.js';
 
 // Get package version
 const packageVersion = getPackageVersion();
+const FALLBACK_ENABLED = process.argv.includes('--fallback') || process.env.FALLBACK === 'true';
 
 // OAuth state storage (state -> { server, verifier, state, timestamp })
 // Maps state ID to active OAuth flow data
@@ -140,7 +142,7 @@ function createAuthMiddleware() {
  */
 function validateConfigFields(input) {
     const updates = {};
-    const { maxRetries, retryBaseMs, retryMaxMs, defaultCooldownMs, maxWaitBeforeErrorMs, maxAccounts, globalQuotaThreshold, accountSelection, rateLimitDedupWindowMs, maxConsecutiveFailures, extendedCooldownMs, maxCapacityRetries, switchAccountDelayMs, capacityBackoffTiersMs } = input;
+    const { maxRetries, retryBaseMs, retryMaxMs, defaultCooldownMs, maxWaitBeforeErrorMs, maxAccounts, globalQuotaThreshold, accountSelection, rateLimitDedupWindowMs, maxConsecutiveFailures, extendedCooldownMs, maxCapacityRetries, switchAccountDelayMs, capacityBackoffTiersMs, localApiPortOverride } = input;
 
     if (typeof maxRetries === 'number' && maxRetries >= 1 && maxRetries <= 20) {
         updates.maxRetries = maxRetries;
@@ -183,6 +185,11 @@ function validateConfigFields(input) {
         if (allValid) {
             updates.capacityBackoffTiersMs = [...capacityBackoffTiersMs];
         }
+    }
+    if (localApiPortOverride === null || localApiPortOverride === '') {
+        updates.localApiPortOverride = null;
+    } else if (typeof localApiPortOverride === 'number' && Number.isInteger(localApiPortOverride) && localApiPortOverride >= 1 && localApiPortOverride <= 65535) {
+        updates.localApiPortOverride = localApiPortOverride;
     }
     // Account selection strategy and tuning validation
     if (accountSelection && typeof accountSelection === 'object') {
@@ -567,6 +574,11 @@ export function mountWebUI(app, dirname, accountManager) {
             res.json({
                 status: 'ok',
                 config: publicConfig,
+                runtime: {
+                    effectiveLocalApiPort: getEffectiveLocalApiPort(),
+                    effectiveLocalApiBaseUrl: getEffectiveLocalApiBaseUrl(),
+                    serverPort: Number(process.env.PORT || DEFAULT_PORT)
+                },
                 version: packageVersion,
                 note: 'Edit ~/.config/antigravity-proxy/config.json or use env vars to change these values'
             });
@@ -745,44 +757,21 @@ export function mountWebUI(app, dirname, accountManager) {
     });
 
     /**
-     * POST /api/claude/config/restore - Restore Claude CLI to default (remove proxy settings)
+     * POST /api/claude/config/restore - Restore Claude CLI to default proxy mode
      */
     app.post('/api/claude/config/restore', async (req, res) => {
         try {
-            const claudeConfig = await readClaudeConfig();
-
-            // Proxy-related environment variables to remove when restoring defaults
-            const PROXY_ENV_VARS = [
-                'ANTHROPIC_BASE_URL',
-                'ANTHROPIC_AUTH_TOKEN',
-                'ANTHROPIC_MODEL',
-                'CLAUDE_CODE_SUBAGENT_MODEL',
-                'ANTHROPIC_DEFAULT_OPUS_MODEL',
-                'ANTHROPIC_DEFAULT_SONNET_MODEL',
-                'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-                'ENABLE_EXPERIMENTAL_MCP_CLI'
-            ];
-
-            // Remove proxy-related environment variables to restore defaults
-            if (claudeConfig.env) {
-                for (const key of PROXY_ENV_VARS) {
-                    delete claudeConfig.env[key];
-                }
-                // Remove env entirely if empty to truly restore defaults
-                if (Object.keys(claudeConfig.env).length === 0) {
-                    delete claudeConfig.env;
-                }
-            }
+            const claudeConfig = createDefaultClaudeConfig();
 
             // Use replaceClaudeConfig to completely overwrite the config (not merge)
             const newConfig = await replaceClaudeConfig(claudeConfig);
 
-            logger.info(`[WebUI] Restored Claude CLI config to defaults at ${getClaudeConfigPath()}`);
+            logger.info(`[WebUI] Restored Claude CLI config to default proxy mode at ${getClaudeConfigPath()}`);
 
             res.json({
                 status: 'ok',
                 config: newConfig,
-                message: 'Claude CLI configuration restored to defaults'
+                message: 'Claude CLI configuration restored to default proxy mode'
             });
         } catch (error) {
             logger.error('[WebUI] Error restoring Claude config:', error);
@@ -845,8 +834,8 @@ export function mountWebUI(app, dirname, accountManager) {
             const claudeConfig = await readClaudeConfig();
 
             if (mode === 'proxy') {
-                // Switch to proxy mode - use first default preset config (e.g., "Claude Thinking")
-                claudeConfig.env = { ...DEFAULT_PRESETS[0].config };
+                // Switch to proxy mode using current server port
+                claudeConfig.env = { ...createDefaultClaudeConfig().env };
             } else {
                 // Switch to paid mode - remove env entirely
                 delete claudeConfig.env;
@@ -865,6 +854,51 @@ export function mountWebUI(app, dirname, accountManager) {
             });
         } catch (error) {
             logger.error('[WebUI] Error switching mode:', error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/chat/send - Send a chat request from the WebUI playground
+     */
+    app.post('/api/chat/send', async (req, res) => {
+        try {
+            await accountManager.initialize?.();
+
+            const {
+                model,
+                messages,
+                system,
+                max_tokens,
+                temperature
+            } = req.body || {};
+
+            if (!model || typeof model !== 'string') {
+                return res.status(400).json({ status: 'error', error: 'model is required' });
+            }
+            if (!Array.isArray(messages) || messages.length === 0) {
+                return res.status(400).json({ status: 'error', error: 'messages must be a non-empty array' });
+            }
+
+            const request = {
+                model,
+                messages,
+                system,
+                temperature
+            };
+
+            if (typeof max_tokens === 'number') {
+                request.max_tokens = max_tokens;
+            }
+
+            const response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
+
+            res.json({
+                status: 'ok',
+                response
+            });
+        } catch (error) {
+            logger.error('[WebUI] Chat send failed:', error);
             res.status(500).json({ status: 'error', error: error.message });
         }
     });

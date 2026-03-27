@@ -11,7 +11,14 @@ window.Components.dashboard = () => ({
     hasFilteredTrendData: true,
     charts: { quotaDistribution: null, usageTrend: null },
     usageStats: { total: 0, today: 0, thisHour: 0 },
+    usageSummary: {
+        officialQuota: { requestsPerMinuteCap: 0, requestsPerDayCap: 0 },
+        accountsByTier: { free: 0, pro: 0, ultra: 0, unknown: 0 },
+        tierDetection: { detectedBySource: {}, tierSignalMismatchCount: 0 },
+        trackedScope: 'local_proxy_requests_only'
+    },
     historyData: {},
+    historyLoaded: false,
     modelTree: {},
     families: [],
 
@@ -67,9 +74,30 @@ window.Components.dashboard = () => ({
             }
         });
 
+        this.$watch('$store.data.usageSummary', (summary) => {
+            this.applyUsageSummary(summary);
+        });
+
+        this.$watch('$store.data.usageHistoryLoaded', (loaded) => {
+            this.historyLoaded = !!loaded;
+            if (this.historyLoaded && (!this.historyData || Object.keys(this.historyData).length === 0)) {
+                this.stats.hasTrendData = false;
+                this.updateTrendChart();
+            }
+        });
+
         // Watch for history updates from data-store (automatically loaded with account data)
         this.$watch('$store.data.usageHistory', (newHistory) => {
-            if (this.$store.global.activeTab === 'dashboard' && newHistory && Object.keys(newHistory).length > 0) {
+            if (this.$store.global.activeTab === 'dashboard') {
+                this.historyLoaded = !!this.$store.data.usageHistoryLoaded;
+
+                if (!newHistory || Object.keys(newHistory).length === 0) {
+                    this.historyData = {};
+                    this.stats.hasTrendData = false;
+                    this.updateTrendChart();
+                    return;
+                }
+
                 // Optimization: Skip if data hasn't changed (prevents double render on load)
                 if (this.historyData && JSON.stringify(newHistory) === JSON.stringify(this.historyData)) {
                     return;
@@ -87,6 +115,8 @@ window.Components.dashboard = () => ({
             this.$nextTick(() => {
                 this.updateStats();
                 this.updateCharts();
+                this.applyUsageSummary(Alpine.store('data').usageSummary);
+                this.historyLoaded = !!Alpine.store('data').usageHistoryLoaded;
 
                 // Optimization: Only process history if it hasn't been processed yet
                 // The usageHistory watcher above will handle updates if data changes
@@ -98,9 +128,24 @@ window.Components.dashboard = () => ({
                         this.processHistory(history);
                         this.stats.hasTrendData = true;
                     }
+                } else {
+                    this.stats.hasTrendData = false;
+                    this.updateTrendChart();
                 }
             });
         }
+    },
+
+    applyUsageSummary(summary) {
+        if (!summary) return;
+        this.usageSummary = summary;
+
+        const requests = summary.requests || {};
+        this.usageStats = {
+            total: requests.total || 0,
+            today: requests.today || 0,
+            thisHour: requests.thisHour || 0
+        };
     },
 
     processHistory(history) {

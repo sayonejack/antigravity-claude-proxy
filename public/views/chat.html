@@ -1,0 +1,102 @@
+<div class="p-6 lg:p-8" x-data="chatPlayground">
+    <div class="max-w-6xl mx-auto flex flex-col gap-6">
+        <div class="flex items-start justify-between gap-4">
+            <div>
+                <h1 class="text-2xl font-bold text-white">Chat</h1>
+                <p class="text-sm text-gray-400 mt-1">Test models directly from the WebUI without touching external clients.</p>
+            </div>
+            <button class="btn btn-sm btn-ghost" @click="clearChat()">Clear</button>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-[260px_320px_minmax(0,1fr)] gap-6">
+            <div class="rounded-2xl border border-space-border bg-space-900/70 backdrop-blur-sm p-5 flex flex-col gap-4 min-h-[70vh]">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div class="text-xs font-mono text-gray-500 uppercase tracking-wider">Conversations</div>
+                        <div class="text-sm text-gray-400 mt-1">Local session list for quick switching.</div>
+                    </div>
+                    <button class="btn btn-xs btn-primary" @click="startNewChat()">New</button>
+                </div>
+
+                <div class="flex flex-col gap-2 overflow-auto custom-scrollbar">
+                    <template x-for="session in sessions" :key="session.id">
+                        <button class="text-left rounded-xl border px-3 py-3 transition-all"
+                            :class="session.id === activeSessionId
+                                ? 'border-neon-purple/40 bg-neon-purple/10 text-white'
+                                : 'border-space-border bg-space-950/70 text-gray-300 hover:border-neon-cyan/30 hover:bg-space-950'"
+                            @click="selectSession(session.id)">
+                            <div class="text-sm font-medium truncate" x-text="session.title"></div>
+                            <div class="text-[11px] text-gray-500 mt-1" x-text="`${session.messages.length} messages`"></div>
+                        </button>
+                    </template>
+                </div>
+            </div>
+
+            <div class="rounded-2xl border border-space-border bg-space-900/70 backdrop-blur-sm p-5 flex flex-col gap-4">
+                <div>
+                    <label class="text-xs font-mono text-gray-500 uppercase tracking-wider block mb-2">Model</label>
+                    <select class="select select-bordered w-full bg-space-950 border-space-border text-gray-200"
+                        x-model="selectedModel">
+                        <template x-for="model in models" :key="model.id">
+                            <option :value="model.id" x-text="model.id"></option>
+                        </template>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="text-xs font-mono text-gray-500 uppercase tracking-wider block mb-2">System Prompt</label>
+                    <textarea class="textarea textarea-bordered w-full min-h-32 bg-space-950 border-space-border text-gray-200"
+                        x-model="systemPrompt" placeholder="Optional system instructions"></textarea>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="text-xs font-mono text-gray-500 uppercase tracking-wider block mb-2">Max Tokens</label>
+                        <input type="number" class="input input-bordered w-full bg-space-950 border-space-border text-gray-200"
+                            x-model="maxTokens" min="1" max="16384">
+                    </div>
+                    <div>
+                        <label class="text-xs font-mono text-gray-500 uppercase tracking-wider block mb-2">Temperature</label>
+                        <input type="number" class="input input-bordered w-full bg-space-950 border-space-border text-gray-200"
+                            x-model="temperature" min="0" max="2" step="0.1" placeholder="default">
+                    </div>
+                </div>
+            </div>
+
+            <div class="rounded-2xl border border-space-border bg-space-900/70 backdrop-blur-sm overflow-hidden min-h-[70vh] flex flex-col">
+                <div class="flex-1 p-5 overflow-auto custom-scrollbar flex flex-col gap-4">
+                    <template x-for="(message, index) in messages" :key="index">
+                        <div class="flex" :class="message.role === 'user' ? 'justify-end' : 'justify-start'">
+                            <div class="max-w-[85%] rounded-2xl px-4 py-3 border text-sm leading-7 whitespace-pre-wrap"
+                                :class="message.role === 'user'
+                                    ? 'bg-neon-purple/10 border-neon-purple/30 text-gray-100'
+                                    : 'bg-space-950 border-space-border text-gray-200'">
+                                <div class="text-[10px] font-mono uppercase tracking-wider mb-2 opacity-60"
+                                    x-text="message.role"></div>
+                                <div x-text="message.text"></div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <div class="border-t border-space-border p-4 bg-space-950/70">
+                    <div class="flex flex-col gap-3">
+                        <textarea class="textarea textarea-bordered w-full min-h-28 bg-space-900 border-space-border text-gray-100"
+                            x-model="userInput" placeholder="Send a message..." @keydown.meta.enter.prevent="sendMessage()"
+                            @keydown.ctrl.enter.prevent="sendMessage()"></textarea>
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="text-xs text-gray-500">Press Cmd/Ctrl+Enter to send</div>
+                            <div class="flex items-center gap-3">
+                                <button class="btn btn-ghost min-w-24" @click="clearChat()" :disabled="sending">Clear</button>
+                                <button class="btn btn-primary min-w-28" @click="sendMessage()" :disabled="sending || !userInput.trim()">
+                                <span x-show="!sending">Send</span>
+                                <span x-show="sending">Sending...</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

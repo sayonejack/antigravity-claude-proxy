@@ -33,6 +33,12 @@
 
   "requestTimeoutMs": 300000,
 
+  "temporaryClaudeToGeminiSwitch": {
+    "enabled": true,
+    "durationMs": 18000000
+  },
+  "_temporaryClaudeToGeminiSwitch_comment": "When all accounts are exhausted for a Claude model, temporarily route that Claude model to its Gemini fallback for 5 hours.",
+
   "maxAccounts": 10,
   "_maxAccounts_comment": "Maximum number of Google accounts allowed (1-100). Default: 10.",
 

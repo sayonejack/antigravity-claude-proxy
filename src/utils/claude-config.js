@@ -1,26 +1,40 @@
 /**
  * Claude CLI Configuration Utility
  *
- * Handles reading and writing to the global Claude CLI settings file.
- * Location: ~/.claude/settings.json (Windows: %USERPROFILE%\.claude\settings.json)
+ * Handles reading and writing to the Claude CLI settings file used by this project.
+ * Default location: <project-root>/.claude/settings.json
  *
- * When running as a system service (e.g. systemd), os.homedir() resolves to the
- * service user's home directory, not the actual user's. Set CLAUDE_CONFIG_PATH to
- * the real user's ~/.claude directory to fix this.
+ * Set CLAUDE_CONFIG_PATH to override the target directory if needed.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
-import os from 'os';
+import { fileURLToPath } from 'url';
 import { logger } from './logger.js';
 import { DEFAULT_PRESETS } from '../constants.js';
+import { config, getEffectiveLocalApiBaseUrl } from '../config.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
+
+export function createDefaultClaudeConfig() {
+    const baseUrl = getEffectiveLocalApiBaseUrl();
+    return {
+        env: {
+            ...DEFAULT_PRESETS[0].config,
+            ANTHROPIC_BASE_URL: baseUrl,
+            ANTHROPIC_AUTH_TOKEN: config.apiKey || ''
+        }
+    };
+}
 
 /**
- * Get the path to the global Claude CLI settings file.
+ * Get the path to the Claude CLI settings file used by this project.
  *
  * Resolution order:
- * 1. CLAUDE_CONFIG_PATH env var (path to .claude directory, e.g. /home/user/.claude)
- * 2. Default: os.homedir()/.claude/settings.json
+ * 1. CLAUDE_CONFIG_PATH env var (path to .claude directory)
+ * 2. Default: <project-root>/.claude/settings.json
  *
  * @returns {string} Absolute path to settings.json
  */
@@ -29,27 +43,27 @@ export function getClaudeConfigPath() {
     if (configDir) {
         return path.join(configDir, 'settings.json');
     }
-    return path.join(os.homedir(), '.claude', 'settings.json');
+    return path.join(PROJECT_ROOT, '.claude', 'settings.json');
 }
 
 /**
- * Read the global Claude CLI configuration
+ * Read the Claude CLI configuration
  * @returns {Promise<Object>} The configuration object or empty object if file missing
  */
 export async function readClaudeConfig() {
     const configPath = getClaudeConfigPath();
     try {
         const content = await fs.readFile(configPath, 'utf8');
-        if (!content.trim()) return { env: {} };
+        if (!content.trim()) return createDefaultClaudeConfig();
         return JSON.parse(content);
     } catch (error) {
         if (error.code === 'ENOENT') {
-            logger.warn(`[ClaudeConfig] Config file not found at ${configPath}, returning empty default`);
-            return { env: {} };
+            logger.warn(`[ClaudeConfig] Config file not found at ${configPath}, returning proxy default`);
+            return createDefaultClaudeConfig();
         }
         if (error instanceof SyntaxError) {
-            logger.error(`[ClaudeConfig] Invalid JSON in config at ${configPath}. Returning safe default.`);
-            return { env: {} };
+            logger.error(`[ClaudeConfig] Invalid JSON in config at ${configPath}. Returning proxy default.`);
+            return createDefaultClaudeConfig();
         }
         logger.error(`[ClaudeConfig] Failed to read config at ${configPath}:`, error.message);
         throw error;

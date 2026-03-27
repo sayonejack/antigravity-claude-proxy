@@ -20,7 +20,14 @@ import { AccountManager } from './account-manager/index.js';
 import { clearThinkingSignatureCache } from './format/signature-cache.js';
 import { formatDuration } from './utils/helpers.js';
 import { logger } from './utils/logger.js';
+import {
+    convertOpenAIRequestToAnthropic,
+    convertAnthropicToOpenAIResponse,
+    streamAnthropicEventsToOpenAI
+} from './utils/openai-compat.js';
+import { buildUsageSummary } from './utils/usage-summary.js';
 import usageStats from './modules/usage-stats.js';
+import { resolveTemporaryModel } from './temporary-model-switcher.js';
 
 // Parse fallback flag directly from command line args to avoid circular dependency
 const args = process.argv.slice(2);
@@ -176,6 +183,149 @@ function parseError(error) {
     }
 
     return { errorType, statusCode, errorMessage };
+}
+
+function resolveApiError(error) {
+    return error.statusCode && error.errorType
+        ? { errorType: error.errorType, statusCode: error.statusCode, errorMessage: error.message }
+        : parseError(error);
+}
+
+function sendAnthropicErrorJson(res, statusCode, errorType, errorMessage) {
+    res.status(statusCode).json({
+        type: 'error',
+        error: {
+            type: errorType,
+            message: errorMessage
+        }
+    });
+}
+
+function sendAnthropicStreamError(res, errorType, errorMessage) {
+    res.write(`event: error\ndata: ${JSON.stringify({
+        type: 'error',
+        error: { type: errorType, message: errorMessage }
+    })}\n\n`);
+    res.end();
+}
+
+function sendOpenAIErrorJson(res, statusCode, errorType, errorMessage) {
+    res.status(statusCode).json({
+        error: {
+            message: errorMessage,
+            type: errorType
+        }
+    });
+}
+
+function sendOpenAIStreamError(res, errorMessage, errorType = 'api_error') {
+    res.write(`data: ${JSON.stringify({
+        error: { message: errorMessage, type: errorType }
+    })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+}
+
+async function handleAnthropicMessagesRequest(req, res) {
+    // Ensure account manager is initialized
+    await ensureInitialized();
+
+    const {
+        model,
+        messages,
+        stream,
+        system,
+        max_tokens,
+        tools,
+        tool_choice,
+        thinking,
+        top_p,
+        top_k,
+        temperature
+    } = req.body;
+
+    // Resolve model mapping if configured
+    let requestedModel = model || 'claude-3-5-sonnet-20241022';
+    const modelMapping = config.modelMapping || {};
+    if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
+        const targetModel = modelMapping[requestedModel].mapping;
+        logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
+        requestedModel = targetModel;
+    }
+
+    const temporaryModelResolution = resolveTemporaryModel(requestedModel);
+    if (temporaryModelResolution.switched) {
+        logger.warn(
+            `[Server] Temporary Claude fallback active: ${requestedModel} -> ${temporaryModelResolution.model} until ${new Date(temporaryModelResolution.expiresAt).toISOString()}`
+        );
+        requestedModel = temporaryModelResolution.model;
+    }
+
+    const modelId = requestedModel;
+
+    // Validate model ID before processing
+    const { account: validationAccount } = accountManager.selectAccount();
+    if (validationAccount) {
+        const token = await accountManager.getTokenForAccount(validationAccount);
+        const projectId = validationAccount.subscription?.projectId || null;
+        const valid = await isValidModel(modelId, token, projectId);
+
+        if (!valid) {
+            throw new Error(`invalid_request_error: Invalid model: ${modelId}. Use /v1/models to see available models.`);
+        }
+    }
+
+    if (accountManager.isAllRateLimited(modelId)) {
+        logger.warn(`[Server] All accounts rate-limited for ${modelId}. Resetting state for optimistic retry.`);
+        accountManager.resetAllRateLimits();
+    }
+
+    if (!messages || !Array.isArray(messages)) {
+        const error = new Error('messages is required and must be an array');
+        error.statusCode = 400;
+        error.errorType = 'invalid_request_error';
+        throw error;
+    }
+
+    if (messages.length === 1 && messages[0].content === 'count') {
+        return { stream, response: {} };
+    }
+
+    const request = {
+        model: modelId,
+        messages,
+        stream,
+        system,
+        tools,
+        tool_choice,
+        thinking,
+        top_p,
+        top_k,
+        temperature
+    };
+
+    if (typeof max_tokens === 'number') {
+        request.max_tokens = max_tokens;
+    }
+
+    logger.info(`[API] Request for model: ${request.model}, stream: ${!!stream}`);
+
+    if (logger.isDebugEnabled) {
+        logger.debug('[API] Message structure:');
+        messages.forEach((msg, i) => {
+            const contentTypes = Array.isArray(msg.content)
+                ? msg.content.map(c => c.type || 'text').join(', ')
+                : (typeof msg.content === 'string' ? 'text' : 'unknown');
+            logger.debug(`  [${i}] ${msg.role}: ${contentTypes}`);
+        });
+    }
+
+    if (stream) {
+        return { stream: true, generator: sendMessageStream(request, accountManager, FALLBACK_ENABLED), modelId };
+    }
+
+    const response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
+    return { stream: false, response, modelId };
 }
 
 // Request logging middleware
@@ -375,8 +525,7 @@ app.get('/account-limits', async (req, res) => {
 
                     // Update account object with fresh data
                     account.subscription = {
-                        tier: subscription.tier,
-                        projectId: subscription.projectId,
+                        ...subscription,
                         detectedAt: Date.now()
                     };
                     account.quota = {
@@ -564,6 +713,8 @@ app.get('/account-limits', async (req, res) => {
             accountStatus.accounts.map(a => [a.email, a])
         );
 
+        const usageHistory = includeHistory ? usageStats.getHistory() : {};
+
         // Build response data
         const responseData = {
             timestamp: new Date().toLocaleString(),
@@ -609,12 +760,13 @@ app.get('/account-limits', async (req, res) => {
                         })
                     )
                 };
-            })
+            }),
+            usageSummary: buildUsageSummary(accountLimits, usageHistory)
         };
 
         // Optionally include usage history (for dashboard performance optimization)
         if (includeHistory) {
-            responseData.history = usageStats.getHistory();
+            responseData.history = usageHistory;
         }
 
         res.json(responseData);
@@ -706,105 +858,16 @@ app.post('/v1/messages/count_tokens', (req, res) => {
  */
 app.post('/v1/messages', async (req, res) => {
     try {
-        // Ensure account manager is initialized
-        await ensureInitialized();
+        const result = await handleAnthropicMessagesRequest(req, res);
 
-        const {
-            model,
-            messages,
-            stream,
-            system,
-            max_tokens,
-            tools,
-            tool_choice,
-            thinking,
-            top_p,
-            top_k,
-            temperature
-        } = req.body;
-
-        // Resolve model mapping if configured
-        let requestedModel = model || 'claude-3-5-sonnet-20241022';
-        const modelMapping = config.modelMapping || {};
-        if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
-            const targetModel = modelMapping[requestedModel].mapping;
-            logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
-            requestedModel = targetModel;
-        }
-
-        const modelId = requestedModel;
-
-        // Validate model ID before processing
-        const { account: validationAccount } = accountManager.selectAccount();
-        if (validationAccount) {
-            const token = await accountManager.getTokenForAccount(validationAccount);
-            const projectId = validationAccount.subscription?.projectId || null;
-            const valid = await isValidModel(modelId, token, projectId);
-
-            if (!valid) {
-                throw new Error(`invalid_request_error: Invalid model: ${modelId}. Use /v1/models to see available models.`);
-            }
-        }
-
-        // Optimistic Retry: If ALL accounts are rate-limited for this model, reset them to force a fresh check.
-        // If we have some available accounts, we try them first.
-        if (accountManager.isAllRateLimited(modelId)) {
-            logger.warn(`[Server] All accounts rate-limited for ${modelId}. Resetting state for optimistic retry.`);
-            accountManager.resetAllRateLimits();
-        }
-
-        // Validate required fields
-        if (!messages || !Array.isArray(messages)) {
-            return res.status(400).json({
-                type: 'error',
-                error: {
-                    type: 'invalid_request_error',
-                    message: 'messages is required and must be an array'
-                }
-            });
-        }
-
-        // Filter out "count" requests (often automated background checks)
-        if (messages.length === 1 && messages[0].content === 'count') {
-            return res.json({});
-        }
-
-        // Build the request object
-        const request = {
-            model: modelId,
-            messages,
-            max_tokens: max_tokens || 4096,
-            stream,
-            system,
-            tools,
-            tool_choice,
-            thinking,
-            top_p,
-            top_k,
-            temperature
-        };
-
-        logger.info(`[API] Request for model: ${request.model}, stream: ${!!stream}`);
-
-        // Debug: Log message structure to diagnose tool_use/tool_result ordering
-        if (logger.isDebugEnabled) {
-            logger.debug('[API] Message structure:');
-            messages.forEach((msg, i) => {
-                const contentTypes = Array.isArray(msg.content)
-                    ? msg.content.map(c => c.type || 'text').join(', ')
-                    : (typeof msg.content === 'string' ? 'text' : 'unknown');
-                logger.debug(`  [${i}] ${msg.role}: ${contentTypes}`);
-            });
-        }
-
-        if (stream) {
+        if (result.stream) {
             // Handle streaming response
             // Do NOT flush headers immediately. We need to wait for the first chunk
             // to ensure we don't send a 200 OK if the upstream fails immediately (e.g. 429/503).
 
             try {
                 // Initialize the generator
-                const generator = sendMessageStream(request, accountManager, FALLBACK_ENABLED);
+                const generator = result.generator;
                 
                 // BUFFERING STRATEGY:
                 // Pull the first event *before* sending headers. 
@@ -838,38 +901,26 @@ app.post('/v1/messages', async (req, res) => {
                 if (!res.headersSent) {
                     logger.error('[API] Initial stream error:', error);
                     const { errorType, statusCode, errorMessage } = parseError(error);
-                    
-                    return res.status(statusCode).json({
-                        type: 'error',
-                        error: {
-                            type: errorType,
-                            message: errorMessage
-                        }
-                    });
+
+                    return sendAnthropicErrorJson(res, statusCode, errorType, errorMessage);
                 }
                 
                 // If headers were already sent (should only happen if error occurs mid-stream),
                 // we have to fallback to SSE error event
                 logger.error('[API] Mid-stream error:', error);
                 const { errorType, errorMessage } = parseError(error);
-
-                res.write(`event: error\ndata: ${JSON.stringify({
-                    type: 'error',
-                    error: { type: errorType, message: errorMessage }
-                })}\n\n`);
-                res.end();
+                sendAnthropicStreamError(res, errorType, errorMessage);
             }
 
         } else {
             // Handle non-streaming response
-            const response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
-            res.json(response);
+            res.json(result.response);
         }
 
     } catch (error) {
         logger.error('[API] Error:', error);
 
-        let { errorType, statusCode, errorMessage } = parseError(error);
+        let { errorType, statusCode, errorMessage } = resolveApiError(error);
 
         // For auth errors, try to refresh token
         if (errorType === 'authentication_error') {
@@ -889,20 +940,38 @@ app.post('/v1/messages', async (req, res) => {
         // Check if headers have already been sent (for streaming that failed mid-way)
         if (res.headersSent) {
             logger.warn('[API] Headers already sent, writing error as SSE event');
-            res.write(`event: error\ndata: ${JSON.stringify({
-                type: 'error',
-                error: { type: errorType, message: errorMessage }
-            })}\n\n`);
-            res.end();
+            sendAnthropicStreamError(res, errorType, errorMessage);
         } else {
-            res.status(statusCode).json({
-                type: 'error',
-                error: {
-                    type: errorType,
-                    message: errorMessage
-                }
-            });
+            sendAnthropicErrorJson(res, statusCode, errorType, errorMessage);
         }
+    }
+});
+
+app.post('/v1/chat/completions', async (req, res) => {
+    try {
+        req.body = convertOpenAIRequestToAnthropic(req.body || {});
+        const result = await handleAnthropicMessagesRequest(req, res);
+
+        if (result.stream) {
+            try {
+                const responseModel = result.modelId || req.body.model;
+                await streamAnthropicEventsToOpenAI(res, result.generator, responseModel);
+            } catch (error) {
+                if (!res.headersSent) {
+                    const { errorType, statusCode, errorMessage } = parseError(error);
+                    return sendOpenAIErrorJson(res, statusCode, errorType, errorMessage);
+                }
+
+                sendOpenAIStreamError(res, error.message);
+            }
+            return;
+        }
+
+        res.json(convertAnthropicToOpenAIResponse(result.response, result.modelId || req.body.model));
+    } catch (error) {
+        logger.error('[API] OpenAI chat completions error:', error);
+        const { errorType, statusCode, errorMessage } = resolveApiError(error);
+        sendOpenAIErrorJson(res, statusCode, errorType, errorMessage);
     }
 });
 

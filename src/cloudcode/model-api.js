@@ -169,12 +169,25 @@ export function parseTierId(tierId) {
     return 'unknown';
 }
 
+function getOfficialUsageLimits(tier) {
+    switch (tier) {
+        case 'pro':
+            return { requestsPerMinute: 120, requestsPerDay: 1500 };
+        case 'ultra':
+            return { requestsPerMinute: 120, requestsPerDay: 1500 };
+        case 'free':
+            return { requestsPerMinute: 60, requestsPerDay: 1000 };
+        default:
+            return { requestsPerMinute: null, requestsPerDay: null };
+    }
+}
+
 /**
  * Get subscription tier for an account
  * Calls loadCodeAssist API to discover project ID and subscription tier
  *
  * @param {string} token - OAuth access token
- * @returns {Promise<{tier: string, projectId: string|null}>} Subscription tier (free/pro/ultra) and project ID
+ * @returns {Promise<{tier: string, projectId: string|null, tierId: string|null, tierSource: string|null, tierSignals: object, quotaLimits: object}>} Subscription tier metadata and project ID
  */
 export async function getSubscriptionTier(token) {
     const headers = {
@@ -221,6 +234,12 @@ export async function getSubscriptionTier(token) {
                 projectId = data.cloudaicompanionProject.id;
             }
 
+            const paidTierId = data.paidTier?.id || null;
+            const currentTierId = data.currentTier?.id || null;
+            const allowedTierIds = Array.isArray(data.allowedTiers)
+                ? data.allowedTiers.map(tier => tier?.id).filter(Boolean)
+                : [];
+
             // Extract subscription tier
             // Priority: paidTier > currentTier > allowedTiers
             // - paidTier.id: "g1-pro-tier", "g1-ultra-tier" (Google One subscription)
@@ -261,7 +280,18 @@ export async function getSubscriptionTier(token) {
 
             logger.debug(`[CloudCode] Subscription detected: ${tier} (tierId: ${tierId}, source: ${tierSource}), Project: ${projectId}`);
 
-            return { tier, projectId };
+            return {
+                tier,
+                projectId,
+                tierId,
+                tierSource,
+                tierSignals: {
+                    paidTierId,
+                    currentTierId,
+                    allowedTierIds
+                },
+                quotaLimits: getOfficialUsageLimits(tier)
+            };
         } catch (error) {
             logger.warn(`[CloudCode] loadCodeAssist failed at ${endpoint}:`, error.message);
         }
@@ -269,7 +299,18 @@ export async function getSubscriptionTier(token) {
 
     // Fallback: return default values if all endpoints fail
     logger.warn('[CloudCode] Failed to detect subscription tier from all endpoints. Defaulting to free.');
-    return { tier: 'free', projectId: null };
+    return {
+        tier: 'free',
+        projectId: null,
+        tierId: 'free-tier',
+        tierSource: null,
+        tierSignals: {
+            paidTierId: null,
+            currentTierId: null,
+            allowedTierIds: []
+        },
+        quotaLimits: getOfficialUsageLimits('free')
+    };
 }
 
 /**

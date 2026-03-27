@@ -142,7 +142,7 @@ export function convertAnthropicToGoogle(anthropicRequest) {
     }
 
     // Generation config
-    if (max_tokens) {
+    if (max_tokens !== undefined) {
         googleRequest.generationConfig.maxOutputTokens = max_tokens;
     }
     if (temperature !== undefined) {
@@ -173,16 +173,13 @@ export function convertAnthropicToGoogle(anthropicRequest) {
             thinkingConfig.thinking_budget = thinkingBudget;
             logger.debug(`[RequestConverter] Claude thinking enabled with budget: ${thinkingBudget}${!thinking?.budget_tokens ? ' (default)' : ''}`);
 
-            // Validate max_tokens > thinking_budget as required by the API
+            // Cloud Code requires max_tokens > thinking_budget for Claude thinking models.
+            // Only provide a default when the client omitted max_tokens entirely.
+            const minimumMaxTokens = 64000;
             const currentMaxTokens = googleRequest.generationConfig.maxOutputTokens;
-            if (currentMaxTokens && currentMaxTokens <= thinkingBudget) {
-                const adjustedMaxTokens = thinkingBudget + 8192;
-                if (thinking?.budget_tokens) {
-                    logger.warn(`[RequestConverter] max_tokens (${currentMaxTokens}) <= thinking_budget (${thinkingBudget}). Adjusting to ${adjustedMaxTokens} to satisfy API requirements`);
-                } else {
-                    logger.debug(`[RequestConverter] Adjusting max_tokens to ${adjustedMaxTokens} for default thinking budget`);
-                }
-                googleRequest.generationConfig.maxOutputTokens = adjustedMaxTokens;
+            if (currentMaxTokens === undefined) {
+                logger.debug(`[RequestConverter] No max_tokens provided for Claude thinking model. Defaulting to ${minimumMaxTokens}`);
+                googleRequest.generationConfig.maxOutputTokens = minimumMaxTokens;
             }
 
             googleRequest.generationConfig.thinkingConfig = thinkingConfig;

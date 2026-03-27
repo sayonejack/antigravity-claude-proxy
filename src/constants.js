@@ -296,7 +296,7 @@ export const DEFAULT_PRESETS = [
     {
         name: 'Claude Thinking',
         config: {
-            ANTHROPIC_AUTH_TOKEN: 'test',
+            ANTHROPIC_AUTH_TOKEN: '',
             ANTHROPIC_BASE_URL: 'http://localhost:8080',
             ANTHROPIC_MODEL: 'claude-opus-4-6-thinking',
             ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-6-thinking',
@@ -309,7 +309,7 @@ export const DEFAULT_PRESETS = [
     {
         name: 'Gemini 1M',
         config: {
-            ANTHROPIC_AUTH_TOKEN: 'test',
+            ANTHROPIC_AUTH_TOKEN: '',
             ANTHROPIC_BASE_URL: 'http://localhost:8080',
             ANTHROPIC_MODEL: 'gemini-3.1-pro-high[1m]',
             ANTHROPIC_DEFAULT_OPUS_MODEL: 'gemini-3.1-pro-high[1m]',

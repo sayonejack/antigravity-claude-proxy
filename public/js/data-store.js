@@ -13,6 +13,8 @@ document.addEventListener('alpine:init', () => {
         modelConfig: {}, // Model metadata (hidden, pinned, alias)
         quotaRows: [], // Filtered view
         usageHistory: {}, // Usage statistics history (from /account-limits?includeHistory=true)
+        usageSummary: null, // Aggregated usage + quota metadata
+        usageHistoryLoaded: false,
         globalQuotaThreshold: 0, // Global minimum quota threshold (fraction 0-0.99)
         maxAccounts: 10, // Maximum number of accounts allowed (from config)
         devMode: false, // Developer mode flag (from server config)
@@ -81,6 +83,8 @@ document.addEventListener('alpine:init', () => {
                         this.models = data.models;
                         this.modelConfig = data.modelConfig || {};
                         this.usageHistory = data.usageHistory || {};
+                        this.usageSummary = data.usageSummary || null;
+                        this.usageHistoryLoaded = true;
 
                         // Don't show loading on initial load if we have cache
                         this.initialLoad = false;
@@ -100,6 +104,7 @@ document.addEventListener('alpine:init', () => {
                     models: this.models,
                     modelConfig: this.modelConfig,
                     usageHistory: this.usageHistory,
+                    usageSummary: this.usageSummary,
                     timestamp: Date.now()
                 };
                 localStorage.setItem('ag_data_cache', JSON.stringify(cacheData));
@@ -132,11 +137,11 @@ document.addEventListener('alpine:init', () => {
                 }
                 this.modelConfig = data.modelConfig || {};
                 this.globalQuotaThreshold = data.globalQuotaThreshold || 0;
+                this.usageSummary = data.usageSummary || null;
 
                 // Store usage history if included (for dashboard)
-                if (data.history) {
-                    this.usageHistory = data.history;
-                }
+                this.usageHistory = data.history || {};
+                this.usageHistoryLoaded = Object.prototype.hasOwnProperty.call(data, 'history');
 
                 this.saveToCache(); // Save fresh data
 

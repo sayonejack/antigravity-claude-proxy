@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { logger } from './utils/logger.js';
+import { DEFAULT_PORT } from './constants.js';
 
 function isObject(item) {
     return (item && typeof item === 'object' && !Array.isArray(item));
@@ -31,6 +32,7 @@ function deepMerge(target, source) {
 // Default config
 const DEFAULT_CONFIG = {
     apiKey: '',
+    localApiPortOverride: null,
     webuiPassword: '',
     debug: false,
     devMode: false,
@@ -53,6 +55,10 @@ const DEFAULT_CONFIG = {
     switchAccountDelayMs: 5000,    // Delay before switching accounts on rate limit
     capacityBackoffTiersMs: [5000, 10000, 20000, 30000, 60000], // Progressive backoff tiers for capacity exhaustion
     modelMapping: {},
+    temporaryClaudeToGeminiSwitch: {
+        enabled: true,
+        durationMs: 5 * 60 * 60 * 1000
+    },
     // Account selection strategy configuration
     accountSelection: {
         strategy: 'hybrid',           // 'sticky' | 'round-robin' | 'hybrid'
@@ -147,6 +153,25 @@ export function getPublicConfig() {
     if (publicConfig.apiKey) publicConfig.apiKey = '********';
 
     return publicConfig;
+}
+
+export function getEffectiveLocalApiPort(fallbackPort = process.env.PORT || DEFAULT_PORT) {
+    const override = config.localApiPortOverride;
+
+    if (override === null || override === undefined || override === '') {
+        return Number(fallbackPort) || DEFAULT_PORT;
+    }
+
+    const parsed = Number(override);
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
+        return parsed;
+    }
+
+    return Number(fallbackPort) || DEFAULT_PORT;
+}
+
+export function getEffectiveLocalApiBaseUrl(fallbackPort = process.env.PORT || DEFAULT_PORT) {
+    return `http://localhost:${getEffectiveLocalApiPort(fallbackPort)}`;
 }
 
 export function saveConfig(updates) {

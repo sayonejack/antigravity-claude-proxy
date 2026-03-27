@@ -26,6 +26,7 @@ import { parseResetTime } from './rate-limit-parser.js';
 import { buildCloudCodeRequest, buildHeaders } from './request-builder.js';
 import { parseThinkingSSEResponse } from './sse-parser.js';
 import { getFallbackModel } from '../fallback-config.js';
+import { activateTemporaryClaudeToGeminiSwitch } from '../temporary-model-switcher.js';
 import {
     getRateLimitBackoff,
     clearRateLimitState,
@@ -83,6 +84,16 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
 
                 // If wait time is too long (> 2 minutes), try fallback first, then throw error
                 if (minWaitMs > MAX_WAIT_BEFORE_ERROR_MS) {
+                    const temporaryGeminiModel = activateTemporaryClaudeToGeminiSwitch(
+                        model,
+                        `all accounts exhausted for ${formatDuration(minWaitMs)}`
+                    );
+                    if (temporaryGeminiModel) {
+                        logger.warn(`[CloudCode] Temporarily rerouting ${model} to ${temporaryGeminiModel} after Claude quota exhaustion`);
+                        const fallbackRequest = { ...anthropicRequest, model: temporaryGeminiModel };
+                        return await sendMessage(fallbackRequest, accountManager, false);
+                    }
+
                     // Check if fallback is enabled and available
                     if (fallbackEnabled) {
                         const fallbackModel = getFallbackModel(model);
@@ -425,6 +436,13 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
 
             throw error;
         }
+    }
+
+    const temporaryGeminiModel = activateTemporaryClaudeToGeminiSwitch(model, 'all retries exhausted');
+    if (temporaryGeminiModel) {
+        logger.warn(`[CloudCode] Temporarily rerouting ${model} to ${temporaryGeminiModel} after exhausting all Claude retries`);
+        const fallbackRequest = { ...anthropicRequest, model: temporaryGeminiModel };
+        return await sendMessage(fallbackRequest, accountManager, false);
     }
 
     // All retries exhausted - try fallback model if enabled
